@@ -23,3 +23,16 @@ go.work.sum
 
 # env file
 .env
+
+# Ignore Direnv
+.envrc*
+
+# Ignore Goland
+.idea
+
+# Ignore Taskfile; commit Taskfile.dist.yml instead 
+Taskfile.yml
+Taskfile.yaml
+taskfile.yml
+taskfile.yaml
+
