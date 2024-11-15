@@ -3,8 +3,16 @@
 
 ## Go env
 
+- Modulith structure
+- One directory per service / bounded context
+
+## DevX
 - Taskfile - includes wait
-- Profile - compatible with Heroku
+- Profile - compatible with Heroku - Overmind - https://github.com/DarthSim/overmind
+
+## Go Modulith
+
+- Use multiple cmd, folders, schema per service/bounded context
 
 ## Dev Env
 

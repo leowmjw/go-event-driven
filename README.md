@@ -8,3 +8,6 @@ Check pre-reqs by running:
 ```
 $ make tools
 ```
+
+Demo modulith Event Driven System
+

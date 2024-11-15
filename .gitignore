@@ -36,3 +36,6 @@ Taskfile.yaml
 taskfile.yml
 taskfile.yaml
 
+# Ignore MongoDB files
+mongodb
+
