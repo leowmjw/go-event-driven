@@ -17,8 +17,8 @@ tasks:
   dev:
     desc: Run the application in development mode with live reload
     cmds:
-      - go run main.go
+      - air .
     sources:
-      - './main.go'
+      - '**/*.go'
     watch: true
     silent: false

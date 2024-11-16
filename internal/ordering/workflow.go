@@ -1,8 +1,6 @@
 package ordering
 
 import (
-	"context"
-	"errors"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -60,9 +58,11 @@ func (w OrderWorkflow) Execute(ctx workflow.Context, input OrderWorkflowInput) (
 		return state, nil
 	}
 
+	// Block until payment process is initiated; or auto-cancel after 1 week
 	// Process Payment
 	var paymentID string
 	err = workflow.ExecuteActivity(ctx, ProcessPayment, orderID).Get(ctx, &paymentID)
+	// When payment is processed
 	if err != nil {
 		state.Status = "payment_failed"
 		state.ErrorMessage = err.Error()
@@ -74,6 +74,7 @@ func (w OrderWorkflow) Execute(ctx workflow.Context, input OrderWorkflowInput) (
 	// Process Fulfillment
 	var fulfillmentID string
 	err = workflow.ExecuteActivity(ctx, ProcessFulfillment, orderID).Get(ctx, &fulfillmentID)
+	// If fulfilment fails; need to issue correcting statement to customer
 	if err != nil {
 		state.Status = "fulfillment_failed"
 		state.ErrorMessage = err.Error()
@@ -85,6 +86,7 @@ func (w OrderWorkflow) Execute(ctx workflow.Context, input OrderWorkflowInput) (
 	// Process Delivery
 	var deliveryID string
 	err = workflow.ExecuteActivity(ctx, ProcessDelivery, orderID).Get(ctx, &deliveryID)
+	// Delivery failure will lead to operations dealing/fraud/dispute; which will kick off other failure
 	if err != nil {
 		state.Status = "delivery_failed"
 		state.ErrorMessage = err.Error()
@@ -94,21 +96,4 @@ func (w OrderWorkflow) Execute(ctx workflow.Context, input OrderWorkflowInput) (
 	state.Status = "completed"
 
 	return state, nil
-}
-
-// Activity function signatures
-func CreateOrder(ctx context.Context, input OrderWorkflowInput) (string, error) {
-	return "", errors.New("CreateOrder not implemented")
-}
-
-func ProcessPayment(ctx context.Context, orderID string) (string, error) {
-	return "", errors.New("ProcessPayment not implemented")
-}
-
-func ProcessFulfillment(ctx context.Context, orderID string) (string, error) {
-	return "", errors.New("ProcessFulfillment not implemented")
-}
-
-func ProcessDelivery(ctx context.Context, orderID string) (string, error) {
-	return "", errors.New("ProcessDelivery not implemented")
 }

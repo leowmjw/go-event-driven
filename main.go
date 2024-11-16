@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Welcome to EventDriven e-Commerce!")
+	fmt.Println("Welcome to EventDriven e-Commerce! Toasties!!")
 
 	// Create a new server mux
 	server := http.NewServeMux()
@@ -20,6 +20,15 @@ func main() {
 	// Register routes
 	server.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		fmt.Fprintf(w, "Hello World")
+		return
+	})
+	server.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Hello POSTy")
+		return
+	})
+	server.HandleFunc("GET /error", func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
+		return
 	})
 
 	// Create server with timeouts

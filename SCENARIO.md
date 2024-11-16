@@ -11,6 +11,8 @@ High level description of the Bounded Context for an e-commerce example
 ### Customers Management Context
 
 - Simple CRUD to add Customers into the system
+- Show how complexity of Outbox Pattern avoided is just do the CRUD in Temporal itself
+- Sync/Dump from Dimension data
 
 ### Ordering Context
 
