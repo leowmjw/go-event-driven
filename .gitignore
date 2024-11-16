@@ -39,3 +39,11 @@ taskfile.yaml
 # Ignore MongoDB files
 mongodb
 
+# Ignore binary
+app
+
+# Ignore Task metadata
+.task/
+
+# Ignore any temp folders
+tmp

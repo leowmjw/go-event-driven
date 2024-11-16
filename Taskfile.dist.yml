@@ -1,6 +1,10 @@
 # https://taskfile.dev
-
 version: '3'
+interval: 500ms
+
+# Comment this out to see expected correct behavior
+run: when_changed
+
 
 vars:
   GREETING: Goodbye, World! Copy this to Taskfile.yml to customize!!
@@ -10,3 +14,11 @@ tasks:
     cmds:
       - echo "{{.GREETING}}"
     silent: true
+  dev:
+    desc: Run the application in development mode with live reload
+    cmds:
+      - go run main.go
+    sources:
+      - './main.go'
+    watch: true
+    silent: false

@@ -2,9 +2,10 @@ package ordering
 
 import (
 	"errors"
+	"github.com/davecgh/go-spew/spew"
+	"github.com/stretchr/testify/mock"
 	"testing"
 
-	"github.com/stretchr/testify/mock"
 	"github.com/stretchr/testify/suite"
 	"go.temporal.io/sdk/testsuite"
 )
@@ -35,13 +36,13 @@ func TestOrderWorkflowTestSuite(t *testing.T) {
 func (s *OrderWorkflowTestSuite) Test_SuccessfulOrderWorkflow() {
 	// Test input
 	input := OrderWorkflowInput{
-		OrderID:     "order-1",
-		CustomerID:  "customer-1",
+		OrderID:    "order-1",
+		CustomerID: "customer-1",
 		Items: []OrderItem{
 			{
 				ProductID:  "prod-1",
 				Quantity:   2,
-				UnitPrice: 10.00,
+				UnitPrice:  10.00,
 				TotalPrice: 20.00,
 			},
 		},
@@ -69,17 +70,35 @@ func (s *OrderWorkflowTestSuite) Test_SuccessfulOrderWorkflow() {
 	s.Equal("fulfillment-1", result.FulfillmentID)
 	s.Equal("delivery-1", result.DeliveryID)
 	s.Empty(result.ErrorMessage)
+
+	// Below original to assert not implemented yet
+	//// Execute workflow without mocks to test unimplemented activities
+	//s.env.ExecuteWorkflow(OrderWorkflow{}.Execute, input)
+	//
+	//s.True(s.env.IsWorkflowCompleted())
+	//s.NoError(s.env.GetWorkflowError())
+	//
+	//var result OrderWorkflowState
+	//s.NoError(s.env.GetWorkflowResult(&result))
+	//
+	//// Assert that workflow failed at creation stage due to unimplemented activity
+	//s.Equal("creation_failed", result.Status)
+	//s.True(strings.Contains(result.ErrorMessage, "CreateOrder not implemented"))
+	//s.Empty(result.PaymentID)
+	//s.Empty(result.FulfillmentID)
+	//s.Empty(result.DeliveryID)
+
 }
 
 func (s *OrderWorkflowTestSuite) Test_FailedPaymentWorkflow() {
 	input := OrderWorkflowInput{
-		OrderID:     "order-2",
-		CustomerID:  "customer-2",
+		OrderID:    "order-2",
+		CustomerID: "customer-2",
 		Items: []OrderItem{
 			{
 				ProductID:  "prod-1",
 				Quantity:   1,
-				UnitPrice: 10.00,
+				UnitPrice:  10.00,
 				TotalPrice: 10.00,
 			},
 		},
@@ -101,19 +120,37 @@ func (s *OrderWorkflowTestSuite) Test_FailedPaymentWorkflow() {
 	var result OrderWorkflowState
 	s.NoError(s.env.GetWorkflowResult(&result))
 
+	spew.Dump(result)
+
 	// Assert final state
 	s.Equal("payment_failed", result.Status)
 	s.Contains(result.ErrorMessage, paymentError)
+
+	// Below catches things are not implemented yet ..
+	//// Execute workflow without mocks to test unimplemented activities
+	//s.env.ExecuteWorkflow(OrderWorkflow{}.Execute, input)
+	//
+	//s.True(s.env.IsWorkflowCompleted())
+	//s.NoError(s.env.GetWorkflowError())
+	//
+	//var result OrderWorkflowState
+	//s.NoError(s.env.GetWorkflowResult(&result))
+	//
+	//// Assert that workflow failed at creation stage due to unimplemented activity
+	//s.Equal("creation_failed", result.Status)
+	//s.True(strings.Contains(result.ErrorMessage, "CreateOrder not implemented"))
+	//s.Empty(result.PaymentID)
+
 }
 
 func (s *OrderWorkflowTestSuite) Test_InvalidOrderWorkflow() {
 	input := OrderWorkflowInput{
-		CustomerID:  "customer-3",
+		CustomerID: "customer-3",
 		Items: []OrderItem{
 			{
 				ProductID:  "prod-1",
 				Quantity:   1,
-				UnitPrice: 10.00,
+				UnitPrice:  10.00,
 				TotalPrice: 10.00,
 			},
 		},
@@ -134,7 +171,25 @@ func (s *OrderWorkflowTestSuite) Test_InvalidOrderWorkflow() {
 	var result OrderWorkflowState
 	s.NoError(s.env.GetWorkflowResult(&result))
 
+	spew.Dump(result)
+
 	// Assert final state
 	s.Equal("creation_failed", result.Status)
 	s.Contains(result.ErrorMessage, invalidOrderError)
+
+	//
+	//// Execute workflow without mocks to test unimplemented activities
+	//s.env.ExecuteWorkflow(OrderWorkflow{}.Execute, input)
+	//
+	//s.True(s.env.IsWorkflowCompleted())
+	//s.NoError(s.env.GetWorkflowError())
+	//
+	//var result OrderWorkflowState
+	//s.NoError(s.env.GetWorkflowResult(&result))
+	//
+	//// Assert that workflow failed at creation stage due to unimplemented activity
+	//s.Equal("creation_failed", result.Status)
+	//s.True(strings.Contains(result.ErrorMessage, "CreateOrder not implemented"))
+	//s.Empty(result.PaymentID)
+
 }

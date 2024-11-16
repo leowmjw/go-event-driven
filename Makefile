@@ -1,6 +1,9 @@
 run:
 	@go run *.go
 
+task:
+	@task dev -vvv
+
 test:
 	@gotest ./...
 

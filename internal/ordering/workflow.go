@@ -2,6 +2,7 @@ package ordering
 
 import (
 	"context"
+	"errors"
 	"time"
 
 	"go.temporal.io/sdk/temporal"
@@ -97,17 +98,17 @@ func (w OrderWorkflow) Execute(ctx workflow.Context, input OrderWorkflowInput) (
 
 // Activity function signatures
 func CreateOrder(ctx context.Context, input OrderWorkflowInput) (string, error) {
-	return input.OrderID, nil // Return the order ID for testing
+	return "", errors.New("CreateOrder not implemented")
 }
 
 func ProcessPayment(ctx context.Context, orderID string) (string, error) {
-	return orderID + "-payment", nil // Return a payment ID for testing
+	return "", errors.New("ProcessPayment not implemented")
 }
 
 func ProcessFulfillment(ctx context.Context, orderID string) (string, error) {
-	return orderID + "-fulfillment", nil // Return a fulfillment ID for testing
+	return "", errors.New("ProcessFulfillment not implemented")
 }
 
 func ProcessDelivery(ctx context.Context, orderID string) (string, error) {
-	return orderID + "-delivery", nil // Return a delivery ID for testing
+	return "", errors.New("ProcessDelivery not implemented")
 }
