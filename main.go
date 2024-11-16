@@ -12,7 +12,7 @@ import (
 )
 
 func main() {
-	fmt.Println("Welcome to EventDriven e-Commerce! Toasties!!")
+	fmt.Println("Welcome to EventDriven e-Commerce! Toasties!! Overmind!!")
 
 	// Create a new server mux
 	server := http.NewServeMux()

@@ -5,6 +5,7 @@
 
 - Modulith structure
 - One directory per service / bounded context
+- MongoDB using high level module Qmgo - https://github.com/qiniu/qmgo
 
 ## DevX
 - Taskfile - includes wait
