@@ -22,7 +22,7 @@ type CustomerTestSuite struct {
 
 func (s *CustomerTestSuite) SetupSuite() {
 	ctx := context.Background()
-	s.mongoURI = "mongodb://localhost:27017"
+	s.mongoURI = "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
 
 	// Connect to MongoDB
 	client, err := mongo.Connect(ctx, options.Client().ApplyURI(s.mongoURI))
@@ -66,7 +66,7 @@ func (s *CustomerTestSuite) Test_CreateCustomer() {
 	s.NotEmpty(customer.ID)
 
 	// Wait for event processing
-	time.Sleep(2 * time.Second)
+	time.Sleep(500 * time.Millisecond)
 
 	// Verify customer was created
 	saved, err := s.repository.FindByID(customer.ID)
@@ -102,23 +102,24 @@ func (s *CustomerTestSuite) Test_UpdateCustomer() {
 	err := s.repository.Create(customer)
 	s.Require().NoError(err)
 
-	// Wait for initial event processing
-	time.Sleep(2 * time.Second)
+	// Wait for event processing
+	time.Sleep(500 * time.Millisecond)
 
 	// Update the customer
 	customer.Name = "Jane Smith"
 	err = s.repository.Update(customer)
 	s.Require().NoError(err)
 
-	// Wait for update event processing
-	time.Sleep(2 * time.Second)
+	// Wait for event processing
+	time.Sleep(500 * time.Millisecond)
 
 	// Verify customer was updated
-	updated, err := s.repository.FindByID(customer.ID)
+	saved, err := s.repository.FindByID(customer.ID)
 	s.Require().NoError(err)
-	s.Equal("Jane Smith", updated.Name)
+	s.Equal("Jane Smith", saved.Name)
+	s.Equal(customer.Email, saved.Email)
 
-	// Verify update event was created
+	// Verify outbox event was created
 	customersDB := s.client.Database("CustomersDB")
 	var event OutboxEvent
 	err = customersDB.Collection("outbox").FindOne(context.Background(),
@@ -133,21 +134,24 @@ func (s *CustomerTestSuite) Test_UpdateCustomer() {
 		bson.M{"_id": customer.ID}).Decode(&projection)
 	s.Require().NoError(err)
 	s.Equal("Jane Smith", projection.Name)
+	s.Equal(customer.Email, projection.Email)
 }
 
 func (s *CustomerTestSuite) Test_FindByEmail() {
-	// Create a customer
+	// Create a customer first
 	customer := &Customer{
 		ID:    primitive.NewObjectID(),
-		Name:  "Alice Brown",
-		Email: "alice@example.com",
+		Name:  "Bob Johnson",
+		Email: "bob@example.com",
 	}
 	err := s.repository.Create(customer)
 	s.Require().NoError(err)
 
-	// Find by email
-	found, err := s.repository.FindByEmail("alice@example.com")
+	// Find the customer by email
+	found, err := s.repository.FindByEmail("bob@example.com")
 	s.Require().NoError(err)
+	s.NotNil(found)
 	s.Equal(customer.ID, found.ID)
 	s.Equal(customer.Name, found.Name)
+	s.Equal(customer.Email, found.Email)
 }

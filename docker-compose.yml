@@ -1,0 +1,20 @@
+version: '3.8'
+
+services:
+  mongodb:
+    image: mongo:latest
+    container_name: mongodb
+    ports:
+      - "27017:27017"
+    volumes:
+      - ./deployments/mongodb/mongod.conf:/etc/mongod.conf
+      - mongodb_data:/data/db
+    command: ["mongod", "--config", "/etc/mongod.conf", "--replSet", "rs0"]
+    healthcheck:
+      test: mongosh --eval 'db.runCommand("ping").ok' --quiet
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  mongodb_data:
