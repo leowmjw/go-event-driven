@@ -4,21 +4,30 @@ import (
 	"context"
 	"time"
 
-	"github.com/qiniu/qmgo"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type MongoRepository struct {
-	customersCollection *qmgo.Collection
-	outboxCollection   *qmgo.Collection
+	customersCollection *mongo.Collection
+	outboxCollection   *mongo.Collection
+	mongoClient       *mongo.Client
 }
 
-func NewMongoRepository(customersDB *qmgo.Database) *MongoRepository {
+func NewMongoRepository(mongoURI string) *MongoRepository {
+	// Create MongoDB client
+	clientOpts := options.Client().ApplyURI(mongoURI)
+	client, err := mongo.Connect(context.Background(), clientOpts)
+	if err != nil {
+		panic(err)
+	}
+
 	return &MongoRepository{
-		customersCollection: customersDB.Collection("customers"),
-		outboxCollection:   customersDB.Collection("outbox"),
+		customersCollection: client.Database("CustomersDB").Collection("customers"),
+		outboxCollection:   client.Database("CustomersDB").Collection("outbox"),
+		mongoClient:       client,
 	}
 }
 
@@ -29,12 +38,6 @@ func (r *MongoRepository) Create(customer *Customer) error {
 	now := time.Now()
 	customer.CreatedAt = now
 	customer.UpdatedAt = now
-
-	// Insert customer
-	_, err := r.customersCollection.InsertOne(ctx, customer)
-	if err != nil {
-		return err
-	}
 
 	// Create outbox event with payload as map
 	payload := bson.M{
@@ -54,8 +57,34 @@ func (r *MongoRepository) Create(customer *Customer) error {
 		UpdatedAt: now,
 	}
 
-	_, err = r.outboxCollection.InsertOne(ctx, outboxEvent)
-	return err
+	// Start session for transaction
+	session, err := r.mongoClient.StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(ctx)
+
+	// Start transaction
+	err = session.StartTransaction()
+	if err != nil {
+		return err
+	}
+
+	// Insert customer
+	_, err = session.Client().Database("CustomersDB").Collection("customers").InsertOne(ctx, customer)
+	if err != nil {
+		session.AbortTransaction(ctx)
+		return err
+	}
+
+	// Insert outbox event
+	_, err = session.Client().Database("CustomersDB").Collection("outbox").InsertOne(ctx, outboxEvent)
+	if err != nil {
+		session.AbortTransaction(ctx)
+		return err
+	}
+
+	return session.CommitTransaction(ctx)
 }
 
 func (r *MongoRepository) Update(customer *Customer) error {
@@ -64,13 +93,6 @@ func (r *MongoRepository) Update(customer *Customer) error {
 	// Set update timestamp
 	now := time.Now()
 	customer.UpdatedAt = now
-
-	// Update customer
-	err := r.customersCollection.UpdateOne(ctx, bson.M{"_id": customer.ID}, 
-		bson.M{"$set": customer})
-	if err != nil {
-		return err
-	}
 
 	// Create outbox event with payload as map
 	payload := bson.M{
@@ -90,14 +112,46 @@ func (r *MongoRepository) Update(customer *Customer) error {
 		UpdatedAt: now,
 	}
 
-	_, err = r.outboxCollection.InsertOne(ctx, outboxEvent)
-	return err
+	// Start session for transaction
+	session, err := r.mongoClient.StartSession()
+	if err != nil {
+		return err
+	}
+	defer session.EndSession(ctx)
+
+	// Start transaction
+	err = session.StartTransaction()
+	if err != nil {
+		return err
+	}
+
+	// Update customer
+	result, err := session.Client().Database("CustomersDB").Collection("customers").UpdateOne(ctx, 
+		bson.M{"_id": customer.ID}, 
+		bson.M{"$set": customer})
+	if err != nil {
+		session.AbortTransaction(ctx)
+		return err
+	}
+	if result.MatchedCount == 0 {
+		session.AbortTransaction(ctx)
+		return mongo.ErrNoDocuments
+	}
+
+	// Insert outbox event
+	_, err = session.Client().Database("CustomersDB").Collection("outbox").InsertOne(ctx, outboxEvent)
+	if err != nil {
+		session.AbortTransaction(ctx)
+		return err
+	}
+
+	return session.CommitTransaction(ctx)
 }
 
 func (r *MongoRepository) FindByID(id primitive.ObjectID) (*Customer, error) {
 	var customer Customer
-	err := r.customersCollection.Find(context.Background(), 
-		bson.M{"_id": id}).One(&customer)
+	err := r.customersCollection.FindOne(context.Background(), 
+		bson.M{"_id": id}).Decode(&customer)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -109,8 +163,8 @@ func (r *MongoRepository) FindByID(id primitive.ObjectID) (*Customer, error) {
 
 func (r *MongoRepository) FindByEmail(email string) (*Customer, error) {
 	var customer Customer
-	err := r.customersCollection.Find(context.Background(), 
-		bson.M{"email": email}).One(&customer)
+	err := r.customersCollection.FindOne(context.Background(), 
+		bson.M{"email": email}).Decode(&customer)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil

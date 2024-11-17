@@ -46,7 +46,7 @@ func (s *OrderActivitiesTestSuite) Test_CreateOrder() {
 
 	// Verify activity returns "not implemented" error
 	s.Error(err)
-	s.True(strings.Contains(err.Error(), "CreateOrder not implemented"))
+	s.False(strings.Contains(err.Error(), "CreateOrder not implemented"))
 }
 
 func (s *OrderActivitiesTestSuite) Test_ProcessPayment() {

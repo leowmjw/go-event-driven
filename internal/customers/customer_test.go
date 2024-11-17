@@ -5,49 +5,47 @@ import (
 	"testing"
 	"time"
 
-	"github.com/qiniu/qmgo"
 	"github.com/stretchr/testify/suite"
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
 type CustomerTestSuite struct {
 	suite.Suite
-	customersDB *qmgo.Database
-	orderingDB  *qmgo.Database
+	mongoURI string
 	repository  *MongoRepository
 	forwarder   *EventForwarder
+	client      *mongo.Client
 }
 
 func (s *CustomerTestSuite) SetupSuite() {
 	ctx := context.Background()
+	s.mongoURI = "mongodb://localhost:27017"
 
-	// Connect to CustomersDB
-	clientCustomers, err := qmgo.NewClient(ctx, &qmgo.Config{Uri: "mongodb://localhost:27017"})
+	// Connect to MongoDB
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(s.mongoURI))
 	s.Require().NoError(err)
-	s.customersDB = clientCustomers.Database("CustomersDB")
-
-	// Connect to OrderingDB
-	clientOrdering, err := qmgo.NewClient(ctx, &qmgo.Config{Uri: "mongodb://localhost:27017"})
-	s.Require().NoError(err)
-	s.orderingDB = clientOrdering.Database("OrderingDB")
+	s.client = client
 
 	// Initialize repository and forwarder
-	s.repository = NewMongoRepository(s.customersDB)
-	s.forwarder = NewEventForwarder(s.customersDB, s.orderingDB)
+	s.repository = NewMongoRepository(s.mongoURI)
+	s.forwarder = NewEventForwarder(s.mongoURI)
 	s.forwarder.Start()
 }
 
 func (s *CustomerTestSuite) TearDownSuite() {
 	s.forwarder.Stop()
-	s.customersDB.DropDatabase(context.Background())
-	s.orderingDB.DropDatabase(context.Background())
+	s.client.Disconnect(context.Background())
 }
 
 func (s *CustomerTestSuite) SetupTest() {
-	s.customersDB.Collection("customers").DropCollection(context.Background())
-	s.customersDB.Collection("outbox").DropCollection(context.Background())
-	s.orderingDB.Collection("projection_customers").DropCollection(context.Background())
+	customersDB := s.client.Database("CustomersDB")
+	orderingDB := s.client.Database("OrderingDB")
+	customersDB.Collection("customers").Drop(context.Background())
+	customersDB.Collection("outbox").Drop(context.Background())
+	orderingDB.Collection("projection_customers").Drop(context.Background())
 }
 
 func TestCustomerSuite(t *testing.T) {
@@ -77,16 +75,18 @@ func (s *CustomerTestSuite) Test_CreateCustomer() {
 	s.Equal(customer.Email, saved.Email)
 
 	// Verify outbox event was created
+	customersDB := s.client.Database("CustomersDB")
 	var event OutboxEvent
-	err = s.customersDB.Collection("outbox").Find(context.Background(),
-		bson.M{"event_type": "CustomerCreated"}).One(&event)
+	err = customersDB.Collection("outbox").FindOne(context.Background(),
+		bson.M{"event_type": "CustomerCreated"}).Decode(&event)
 	s.Require().NoError(err)
 	s.Equal("processed", event.Status)
 
 	// Verify projection was created
+	orderingDB := s.client.Database("OrderingDB")
 	var projection CustomerProjection
-	err = s.orderingDB.Collection("projection_customers").Find(context.Background(),
-		bson.M{"_id": customer.ID}).One(&projection)
+	err = orderingDB.Collection("projection_customers").FindOne(context.Background(),
+		bson.M{"_id": customer.ID}).Decode(&projection)
 	s.Require().NoError(err)
 	s.Equal(customer.Name, projection.Name)
 	s.Equal(customer.Email, projection.Email)
@@ -119,16 +119,18 @@ func (s *CustomerTestSuite) Test_UpdateCustomer() {
 	s.Equal("Jane Smith", updated.Name)
 
 	// Verify update event was created
+	customersDB := s.client.Database("CustomersDB")
 	var event OutboxEvent
-	err = s.customersDB.Collection("outbox").Find(context.Background(),
-		bson.M{"event_type": "CustomerUpdated"}).One(&event)
+	err = customersDB.Collection("outbox").FindOne(context.Background(),
+		bson.M{"event_type": "CustomerUpdated"}).Decode(&event)
 	s.Require().NoError(err)
 	s.Equal("processed", event.Status)
 
 	// Verify projection was updated
+	orderingDB := s.client.Database("OrderingDB")
 	var projection CustomerProjection
-	err = s.orderingDB.Collection("projection_customers").Find(context.Background(),
-		bson.M{"_id": customer.ID}).One(&projection)
+	err = orderingDB.Collection("projection_customers").FindOne(context.Background(),
+		bson.M{"_id": customer.ID}).Decode(&projection)
 	s.Require().NoError(err)
 	s.Equal("Jane Smith", projection.Name)
 }
