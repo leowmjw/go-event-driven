@@ -1,0 +1,86 @@
+http:
+  enabled: true
+  address: 0.0.0.0:4195
+  root_path: /bento
+  debug_endpoints: true
+  cert_file: ""
+  key_file: ""
+  cors:
+    enabled: false
+    allowed_origins: []
+  basic_auth:
+    enabled: false
+    realm: restricted
+    username: ""
+    password_hash: ""
+    algorithm: sha256
+    salt: ""
+input:
+  mongodb:
+    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+    database: "CustomersDB"
+    username: ""
+    password: ""
+    collection: "outbox"
+    operation: find
+    json_marshal_mode: canonical
+    query: |
+      root.Status = "pending"
+    auto_replay_nacks: true
+    batch_size: 100
+    sort: {"CreatedAt": 1}
+buffer:
+  none: {}
+pipeline:
+  processors:
+    - mapping: |
+        root = outbox
+        root._id = outbox._id
+        root.name = outbox.name
+        root.email = outbox.email
+        root.created_at = outbox.created_at
+        root.updated_at = timestamp_unix()
+output:
+  mongodb:
+    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+    database: "CustomersDB"
+    username: ""
+    password: ""
+    collection: "customers_projection"
+    operation: update-one
+    write_concern:
+      w: "majority"
+      j: true
+      w_timeout: "10s"
+    document_map: |
+      root = this
+    filter_map: |
+      root._id = this._id
+    upsert: true
+input_resources: []
+processor_resources: []
+output_resources: []
+cache_resources: []
+rate_limit_resources: []
+logger:
+  level: DEBUG
+  format: logfmt
+  add_timestamp: true
+  level_name: level
+  timestamp_name: time
+  message_name: msg
+  static_fields:
+    '@service': bento
+  file:
+    path: ""
+    rotate: false
+    rotate_max_age_days: 0
+  log_all_errors: false
+metrics:
+  prometheus: {}
+  mapping: ""
+tracer:
+  none: {}
+shutdown_delay: 0s
+shutdown_timeout: 20s
+tests: []

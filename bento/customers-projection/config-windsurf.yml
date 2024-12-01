@@ -1,0 +1,70 @@
+http:
+  enabled: true
+  address: 0.0.0.0:4195
+  root_path: /bento
+  debug_endpoints: true
+
+input:
+  mongodb:
+    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+    database: "CustomersDB"
+    collection: "outbox"
+    operation: find
+    json_marshal_mode: canonical
+    query: |
+      root.Status = "processed"
+    auto_replay_nacks: true
+    batch_size: 100
+    sort: {"created_at": 1}
+
+buffer:
+  none: {}
+
+pipeline:
+  processors:
+    - mapping: |
+        # Parse the BSON payload into a customer object
+        let customer = this.Payload.parse_json()
+        
+        # Create the projection document
+        root = {}
+        root._id = customer._id
+        root.name = customer.name
+        root.email = customer.email
+        root.created_at = customer.created_at
+        root.updated_at = timestamp_unix()
+        
+        # Store event info for status update
+        meta event_id = this.ID
+
+    # After processing, update the outbox event status
+    - mongodb:
+        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+        database: "CustomersDB"
+        collection: "outbox"
+        operation: update-one
+        filter_map: |
+          root._id = meta("event_id")
+        document_map: |
+          root = {
+            "$set": {
+              "Status": "processed",
+              "UpdatedAt": timestamp_unix()
+            }
+          }
+
+output:
+  mongodb:
+    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+    database: "OrderingDB"
+    collection: "customers_projection"
+    operation: update-one
+    write_concern:
+      w: "majority"
+      j: true
+      w_timeout: "10s"
+    document_map: |
+      root = this
+    filter_map: |
+      root._id = this._id
+    upsert: true

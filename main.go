@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"app/internal/customers"
+
+	"github.com/bitfield/script"
 )
 
 const mongoURI = "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
@@ -23,8 +25,54 @@ type CustomerRequest struct {
 }
 
 type CustomerResponse struct {
-	Message  string             `json:"message,omitempty"`
+	Message  string              `json:"message,omitempty"`
 	Customer *customers.Customer `json:"customer"`
+}
+
+func mainToo() {
+
+	// Create a new server mux
+	server := http.NewServeMux()
+
+	// Register routes
+	server.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintf(w, "Hello World")
+		return
+	})
+
+	// Create server with timeouts
+	srv := &http.Server{
+		Addr:         ":8080", // This prevents Mac Firewall noisy ..
+		Handler:      server,
+		ReadTimeout:  10 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  30 * time.Second,
+	}
+
+	// Start server in a goroutine
+	go func() {
+		fmt.Printf("Server starting on port %s\n", srv.Addr)
+		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server failed to start: %v\n", err)
+		}
+	}()
+
+	// Wait for interrupt signal
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+	<-quit
+
+	// Graceful shutdown
+	fmt.Println("\nShutting down server...")
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+
+	if err := srv.Shutdown(ctx); err != nil {
+		log.Fatalf("Server forced to shutdown: %v\n", err)
+	}
+
+	fmt.Println("Server gracefully stopped")
+
 }
 
 func main() {
@@ -40,10 +88,25 @@ func main() {
 	// Initialize repository for customer operations
 	repository := customers.NewMongoRepository(mongoURI)
 
-	// Initialize forwarder for normal operations
-	forwarder := customers.NewEventForwarder(mongoURI)
-	forwarder.Start()
-	defer forwarder.Stop()
+	useBento := os.Getenv("ENABLE_BENTO")
+	if useBento != "" {
+		fmt.Println("ACTIVE: Bento Forwarder")
+		// Use Bento for the forwarder instead ...
+		// Start to call bento command line; and have a termination as a defer
+		script.Exec("echo Hello, world!").Stdout()
+
+		defer func() {
+			fmt.Println("KILL: Bento Forwarder")
+			script.Exec("kill `pgrep bento`").Stdout()
+			fmt.Println("FINISH: Bento Forwarder")
+		}()
+	} else {
+		fmt.Println("DEFAULT: channel Forwarder")
+		// DEFAULT: Initialize forwarder for normal operations
+		forwarder := customers.NewEventForwarder(mongoURI)
+		forwarder.Start()
+		defer forwarder.Stop()
+	}
 
 	// Create a new server mux
 	server := http.NewServeMux()
@@ -65,7 +128,7 @@ func main() {
 	// Add customers endpoints
 	server.HandleFunc("GET /customers", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		
+
 		// Get all customers
 		customers, err := setupHandler.GetTestCustomers(ctx)
 		if err != nil {
@@ -128,7 +191,7 @@ func main() {
 			customer.Name = req.Name
 			customer.Email = req.Email
 			customer.UpdatedAt = time.Now()
-			
+
 			err = repository.Update(customer)
 			message = fmt.Sprintf("Customer %s updated successfully", customer.ID.Hex())
 		}
@@ -157,7 +220,7 @@ func main() {
 	// Add outbox endpoint
 	server.HandleFunc("GET /customers/outbox", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		
+
 		// Get all outbox entries
 		entries, err := setupHandler.GetOutboxEntries(ctx)
 		if err != nil {
@@ -178,7 +241,7 @@ func main() {
 	// Add projection endpoint
 	server.HandleFunc("GET /customers/projection", func(w http.ResponseWriter, r *http.Request) {
 		ctx := r.Context()
-		
+
 		// Get all customer projections
 		projections, err := setupHandler.GetCustomerProjections(ctx)
 		if err != nil {
