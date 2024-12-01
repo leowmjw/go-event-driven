@@ -1,0 +1,24 @@
+http:
+  enabled: true
+  address: 0.0.0.0:4195
+  root_path: /bento
+  debug_endpoints: true
+
+input:
+  label: ""
+  generate:
+    interval: 60s
+    mapping: |
+      root = {"timestamp": timestamp_unix()}
+
+pipeline:
+  threads: 1
+  processors:
+    - mapping: |
+        meta success = true
+        root = this
+
+output:
+  label: ""
+  stdout:
+    codec: lines

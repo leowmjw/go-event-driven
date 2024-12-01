@@ -1,0 +1,38 @@
+http:
+  enabled: true
+  address: 0.0.0.0:4195
+  root_path: /bento
+  debug_endpoints: true
+
+input:
+  label: ""
+  broker:
+    inputs:
+      - generate:
+          interval: 60s
+          mapping: |
+            root = {"timestamp": timestamp_unix()}
+      
+      - mongodb:
+          url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+          database: "CustomersDB"
+          collection: "outbox"
+          operation: find
+          json_marshal_mode: canonical
+          query: |
+            root.Status = "pending"
+          auto_replay_nacks: true
+          batch_size: 100
+          sort: {"created_at": 1}
+
+pipeline:
+  threads: 1
+  processors:
+    - mapping: |
+        meta success = true
+        root = this
+
+output:
+  label: ""
+  stdout:
+    codec: lines

@@ -8,13 +8,11 @@ input:
   label: ""
   broker:
     inputs:
-      # Timer input that triggers every minute
       - generate:
           interval: 60s
           mapping: |
             root = {"timestamp": timestamp_unix()}
       
-      # MongoDB input triggered by the timer
       - mongodb:
           url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
           database: "CustomersDB"
@@ -27,17 +25,15 @@ input:
           batch_size: 100
           sort: {"created_at": 1}
 
-buffer:
-  none: {}
-
 pipeline:
   threads: 1
   processors:
-    # First processor: Parse payload and prepare customer data
     - mapping: |
-        meta success = bool(true)
+        root = this
+        meta = {"success": "yes"}
+
+    - mapping: |
         let customer = this
-        
         root = {
           "_id": customer._id,
           "name": customer.name,
@@ -46,7 +42,6 @@ pipeline:
           "updated_at": timestamp_unix()
         }
 
-    # Second processor: Update projection
     - mongodb:
         url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
         database: "OrderingDB"
@@ -62,21 +57,22 @@ pipeline:
           j: true
           w_timeout: "10s"
     
-    # Third processor: Prepare status update
     - mapping: |
-        let status = if meta("success") { "processed" } else { "failed" }
-        root = {
-          "$set": {
-            "Status": status,
-            "UpdatedAt": timestamp_unix()
-          }
+        let status = if meta("success") == "yes" { "processed" } else { "failed" }
+        let update = {
+          "Status": status,
+          "UpdatedAt": timestamp_unix()
         }
-        if !meta("success") {
-          root["$set"]["Error"] = error()
-          root["$inc"] = {"RetryCount": 1}
+        if meta("success") != "yes" {
+          update.Error = error()
         }
+        let result = {"$set": update}
+        if meta("success") != "yes" {
+          result = result.merge({"$inc": {"RetryCount": 1}})
+        }
+        root = result
+        meta = {"update": result}
 
-    # Fourth processor: Update outbox status
     - mongodb:
         url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
         database: "CustomersDB"
@@ -85,7 +81,7 @@ pipeline:
         filter_map: |
           root._id = this._id
         document_map: |
-          root = this
+          root = meta("update")
 
 output:
   label: ""
