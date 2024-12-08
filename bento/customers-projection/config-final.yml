@@ -8,11 +8,17 @@ input:
   label: ""
   broker:
     inputs:
-      - generate:
-          interval: 60s
-          mapping: |
-            root = {"timestamp": timestamp_unix()}
-      
+# Below generates the timestamp but not triggering the rest ..
+#      - generate:
+#          interval: 10s
+#          mapping: |
+#            root = {"timestamp": timestamp_unix()}
+
+# Also does not work pass 1 time :(
+#      - generate:
+#            interval: '@every 10s'
+#            mapping: 'root = {}'
+
       - mongodb:
           url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
           database: "CustomersDB"
@@ -20,20 +26,19 @@ input:
           operation: find
           json_marshal_mode: canonical
           query: |
-            root.Status = "pending"
+            root.status = "pending"
           auto_replay_nacks: true
-          batch_size: 100
+          batch_size: 1000
           sort: {"created_at": 1}
 
 pipeline:
-  threads: 1
   processors:
     - mapping: |
-        root = this
+        root = this.parse_json()
         meta = {"success": "yes"}
 
     - mapping: |
-        let customer = this
+        let customer = this.parse_json()
         root = {
           "_id": customer._id,
           "name": customer.name,
@@ -42,46 +47,63 @@ pipeline:
           "updated_at": timestamp_unix()
         }
 
-    - mongodb:
-        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
-        database: "OrderingDB"
-        collection: "customers_projection"
-        operation: update-one
-        filter_map: |
-          root._id = this._id
-        document_map: |
-          root = {"$set": this}
-        upsert: true
-        write_concern:
-          w: "majority"
-          j: true
-          w_timeout: "10s"
-    
-    - mapping: |
-        let status = if meta("success") == "yes" { "processed" } else { "failed" }
-        let update = {
-          "Status": status,
-          "UpdatedAt": timestamp_unix()
-        }
-        if meta("success") != "yes" {
-          update.Error = error()
-        }
-        let result = {"$set": update}
-        if meta("success") != "yes" {
-          result = result.merge({"$inc": {"RetryCount": 1}})
-        }
-        root = result
-        meta = {"update": result}
-
-    - mongodb:
-        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
-        database: "CustomersDB"
-        collection: "outbox"
-        operation: update-one
-        filter_map: |
-          root._id = this._id
-        document_map: |
-          root = meta("update")
+#pipeline:
+#  threads: 1
+#  processors:
+#    - mapping: |
+#        root = this
+#        meta = {"success": "yes"}
+#
+#    - mapping: |
+#        let customer = this
+#        root = {
+#          "_id": customer._id,
+#          "name": customer.name,
+#          "email": customer.email,
+#          "created_at": customer.created_at,
+#          "updated_at": timestamp_unix()
+#        }
+#
+#    - mongodb:
+#        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+#        database: "OrderingDB"
+#        collection: "customers_projection"
+#        operation: update-one
+#        filter_map: |
+#          root._id = this._id
+#        document_map: |
+#          root = {"$set": this}
+#        upsert: true
+#        write_concern:
+#          w: "majority"
+#          j: true
+#          w_timeout: "10s"
+#
+#    - mapping: |
+#        let status = if meta("success") == "yes" { "processed" } else { "failed" }
+#        let update = {
+#          "Status": status,
+#          "UpdatedAt": timestamp_unix()
+#        }
+#        if meta("success") != "yes" {
+#          update.Error = error()
+#        }
+#        let result = {"$set": update}
+#        if meta("success") != "yes" {
+#          result = result.merge({"$inc": {"RetryCount": 1}})
+#        }
+#        root = result
+#        meta = {"update": result}
+#
+#    - mongodb:
+#        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+#        database: "CustomersDB"
+#        collection: "outbox"
+#        operation: update-one
+#        filter_map: |
+#          root._id = this._id
+#        document_map: |
+#          root = meta("update")
 
 output:
   label: ""
