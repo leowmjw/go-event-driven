@@ -33,19 +33,23 @@ input:
 
 pipeline:
   processors:
-    - mapping: |
-        root = this.parse_json()
-        meta = {"success": "yes"}
+# If processed first; data is gone :(
+#    - mapping: |
+#        root = this.payload
+#        meta = {"success": "yes"}
 
     - mapping: |
-        let customer = this.parse_json()
-        root = {
-          "_id": customer._id,
-          "name": customer.name,
-          "email": customer.email,
-          "created_at": customer.created_at,
-          "updated_at": timestamp_unix()
-        }
+        root.name = this.payload.name
+        root.email = this.payload.email
+        root.updated_at = timestamp_unix()
+        root.status = "true"
+# Below form does not seem to work ..
+#        let customer = this.payload
+#        root = {
+#          "name": customer.name,
+#          "email": customer.email,
+#          "updated_at": timestamp_unix()
+#        }
 
 #pipeline:
 #  threads: 1
@@ -107,5 +111,25 @@ pipeline:
 
 output:
   label: ""
-  stdout:
-    codec: lines
+#  stdout:
+#    codec: lines
+
+  mongodb:
+    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+    database: "OrderingDB"
+    collection: "projection_customers"
+    operation: insert-one
+    write_concern:
+      w: "majority"
+      j: true
+      w_timeout: "2s"
+    document_map: |
+      root.name = this.name
+      root.email = this.email
+      root.updated_at = this.updated_at
+#    document_map: |
+#      root = this
+#    filter_map: |
+#      root._id = this._id
+#    upsert: true
+
