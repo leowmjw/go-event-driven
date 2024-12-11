@@ -8,17 +8,6 @@ input:
   label: ""
   broker:
     inputs:
-# Below generates the timestamp but not triggering the rest ..
-#      - generate:
-#          interval: 10s
-#          mapping: |
-#            root = {"timestamp": timestamp_unix()}
-
-# Also does not work pass 1 time :(
-#      - generate:
-#            interval: '@every 10s'
-#            mapping: 'root = {}'
-
       - mongodb:
           url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
           database: "CustomersDB"
@@ -33,103 +22,28 @@ input:
 
 pipeline:
   processors:
-# If processed first; data is gone :(
-#    - mapping: |
-#        root = this.payload
-#        meta = {"success": "yes"}
-
     - mapping: |
         root.name = this.payload.name
         root.email = this.payload.email
-        root.updated_at = timestamp_unix()
+        root.updated_at = now()
         root.status = "true"
-# Below form does not seem to work ..
-#        let customer = this.payload
-#        root = {
-#          "name": customer.name,
-#          "email": customer.email,
-#          "updated_at": timestamp_unix()
-#        }
 
-#pipeline:
-#  threads: 1
-#  processors:
-#    - mapping: |
-#        root = this
-#        meta = {"success": "yes"}
-#
-#    - mapping: |
-#        let customer = this
-#        root = {
-#          "_id": customer._id,
-#          "name": customer.name,
-#          "email": customer.email,
-#          "created_at": customer.created_at,
-#          "updated_at": timestamp_unix()
-#        }
-#
-#    - mongodb:
-#        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
-#        database: "OrderingDB"
-#        collection: "customers_projection"
-#        operation: update-one
-#        filter_map: |
-#          root._id = this._id
-#        document_map: |
-#          root = {"$set": this}
-#        upsert: true
-#        write_concern:
-#          w: "majority"
-#          j: true
-#          w_timeout: "10s"
-#
-#    - mapping: |
-#        let status = if meta("success") == "yes" { "processed" } else { "failed" }
-#        let update = {
-#          "Status": status,
-#          "UpdatedAt": timestamp_unix()
-#        }
-#        if meta("success") != "yes" {
-#          update.Error = error()
-#        }
-#        let result = {"$set": update}
-#        if meta("success") != "yes" {
-#          result = result.merge({"$inc": {"RetryCount": 1}})
-#        }
-#        root = result
-#        meta = {"update": result}
-#
-#    - mongodb:
-#        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
-#        database: "CustomersDB"
-#        collection: "outbox"
-#        operation: update-one
-#        filter_map: |
-#          root._id = this._id
-#        document_map: |
-#          root = meta("update")
+    - mongodb:
+        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+        database: "OrderingDB"
+        collection: "projection_customers"
+        operation: update-one
+        filter_map: |
+          root.email = this.email
+        document_map: |
+          root = {"$set": this}
+        upsert: true
+        write_concern:
+          w: 1
+          j: true
+          w_timeout: "10s"
 
 output:
   label: ""
-#  stdout:
-#    codec: lines
-
-  mongodb:
-    url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
-    database: "OrderingDB"
-    collection: "projection_customers"
-    operation: insert-one
-    write_concern:
-      w: "majority"
-      j: true
-      w_timeout: "2s"
-    document_map: |
-      root.name = this.name
-      root.email = this.email
-      root.updated_at = this.updated_at
-#    document_map: |
-#      root = this
-#    filter_map: |
-#      root._id = this._id
-#    upsert: true
-
+  stdout:
+    codec: lines
