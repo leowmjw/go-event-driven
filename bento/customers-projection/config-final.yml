@@ -23,6 +23,11 @@ input:
 pipeline:
   processors:
     - mapping: |
+        meta = {
+          "original": this,
+          "myid": this._id.get("$oid")
+        }
+              
         root.name = this.payload.name
         root.email = this.payload.email
         root.updated_at = now()
@@ -43,6 +48,32 @@ pipeline:
           j: true
           w_timeout: "10s"
 
+    - mapping: |
+        root = metadata("original")
+        root.myid = metadata("myid")
+        root.status = "processed"
+        root.updated_at = now()
+
+    - log:
+        message: "processed: {{meta('original')}}"
+        fields_mapping: |
+          root = this
+        level: "INFO"
+
+    - mongodb:
+        url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+        database: "CustomersDB"
+        collection: "outbox"
+        operation: update-one
+        filter_map: |
+          root = {"_id": {"$oid": this.myid}}
+        document_map: |
+          root = {"$set": {"status": this.status, "updated_at": this.updated_at}}
+        write_concern:
+          w: 1
+          j: true
+          w_timeout: "10s"
+    
 output:
   label: ""
   stdout:
