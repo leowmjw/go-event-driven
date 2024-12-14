@@ -160,6 +160,7 @@ func (f *EventForwarder) processEvent(ctx context.Context, event *OutboxEvent) e
 			ID:        customer.ID,
 			Name:      customer.Name,
 			Email:     customer.Email,
+			Deleted:   customer.Deleted,
 			CreatedAt: customer.CreatedAt,
 			UpdatedAt: customer.UpdatedAt,
 		}
@@ -168,10 +169,26 @@ func (f *EventForwarder) processEvent(ctx context.Context, event *OutboxEvent) e
 		update := bson.M{"$set": projection}
 		opts := options.Update().SetUpsert(true)
 
-		_, err := f.orderingDB.Collection("projection_customers").UpdateOne(
+		_, err = f.orderingDB.Collection("projection_customers").UpdateOne(
 			sessCtx, filter, update, opts)
 		if err != nil {
 			return nil, fmt.Errorf("failed to update projection: %v", err)
+		}
+
+		// Update outbox event status
+		update = bson.M{
+			"$set": bson.M{
+				"status":     "processed",
+				"updated_at": time.Now(),
+			},
+		}
+		_, err = f.customersDB.Collection("outbox").UpdateOne(
+			sessCtx,
+			bson.M{"_id": event.ID},
+			update,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update outbox event: %v", err)
 		}
 
 		return nil, nil

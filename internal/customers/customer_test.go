@@ -69,7 +69,7 @@ func (s *CustomerTestSuite) Test_CreateCustomer() {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify customer was created
-	saved, err := s.repository.FindByID(customer.ID)
+	saved, err := s.repository.FindByID(customer.ID, false)
 	s.Require().NoError(err)
 	s.Equal(customer.Name, saved.Name)
 	s.Equal(customer.Email, saved.Email)
@@ -114,7 +114,7 @@ func (s *CustomerTestSuite) Test_UpdateCustomer() {
 	time.Sleep(500 * time.Millisecond)
 
 	// Verify customer was updated
-	saved, err := s.repository.FindByID(customer.ID)
+	saved, err := s.repository.FindByID(customer.ID, false)
 	s.Require().NoError(err)
 	s.Equal("Jane Smith", saved.Name)
 	s.Equal(customer.Email, saved.Email)
@@ -138,20 +138,71 @@ func (s *CustomerTestSuite) Test_UpdateCustomer() {
 }
 
 func (s *CustomerTestSuite) Test_FindByEmail() {
-	// Create a customer first
-	customer := &Customer{
-		ID:    primitive.NewObjectID(),
-		Name:  "Bob Johnson",
-		Email: "bob@example.com",
+	// Create a test customer
+	customer := Customer{
+		ID:        primitive.NewObjectID(),
+		Name:      "Test Customer",
+		Email:     "test@example.com",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
 	}
-	err := s.repository.Create(customer)
+
+	_, err := s.client.Database("CustomersDB").Collection("customers").InsertOne(context.Background(), customer)
 	s.Require().NoError(err)
 
-	// Find the customer by email
-	found, err := s.repository.FindByEmail("bob@example.com")
+	// Test find by email
+	found, err := s.repository.FindByEmail(customer.Email, false)
 	s.Require().NoError(err)
-	s.NotNil(found)
+	s.Require().NotNil(found)
 	s.Equal(customer.ID, found.ID)
-	s.Equal(customer.Name, found.Name)
 	s.Equal(customer.Email, found.Email)
+}
+
+func (s *CustomerTestSuite) Test_SoftDelete() {
+	// Create a test customer
+	customer := Customer{
+		ID:        primitive.NewObjectID(),
+		Name:      "Test Customer",
+		Email:     "test@example.com",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+
+	_, err := s.client.Database("CustomersDB").Collection("customers").InsertOne(context.Background(), customer)
+	s.Require().NoError(err)
+
+	// Soft delete the customer
+	err = s.repository.SoftDelete(customer.ID)
+	s.Require().NoError(err)
+
+	// Verify customer is not found by default
+	found, err := s.repository.FindByID(customer.ID, false)
+	s.Require().NoError(err)
+	s.Require().Nil(found)
+
+	// Verify customer is found when including deleted
+	found, err = s.repository.FindByID(customer.ID, true)
+	s.Require().NoError(err)
+	s.Require().NotNil(found)
+	s.True(found.Deleted)
+
+	// Verify outbox event was created
+	var event OutboxEvent
+	err = s.client.Database("CustomersDB").Collection("outbox").FindOne(context.Background(), bson.M{
+		"event_type": "CustomerDeleted",
+		"status":     "pending",
+	}).Decode(&event)
+	s.Require().NoError(err)
+	s.Equal("CustomerDeleted", event.EventType)
+
+	// Let the forwarder process the event
+	time.Sleep(2 * time.Second)
+
+	// Verify projection was updated
+	var projection CustomerProjection
+	err = s.client.Database("OrderingDB").Collection("projection_customers").FindOne(context.Background(), bson.M{
+		"_id": customer.ID,
+	}).Decode(&projection)
+	s.Require().NoError(err)
+	s.True(projection.Deleted)
 }

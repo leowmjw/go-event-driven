@@ -14,6 +14,7 @@ import (
 	"app/internal/customers"
 
 	"github.com/bitfield/script"
+	"go.mongodb.org/mongo-driver/bson/primitive"
 )
 
 const mongoURI = "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
@@ -22,6 +23,7 @@ type CustomerRequest struct {
 	Action string `json:"action"` // "create" or "update"
 	Name   string `json:"name"`
 	Email  string `json:"email"`
+	CustomerID string `json:"customerID"`
 }
 
 type CustomerResponse struct {
@@ -159,8 +161,8 @@ func main() {
 		}
 
 		// Validate action
-		if req.Action != "create" && req.Action != "update" {
-			http.Error(w, "Invalid action, must be 'create' or 'update'", http.StatusBadRequest)
+		if req.Action != "create" && req.Action != "update" && req.Action != "delete" {
+			http.Error(w, "Invalid action, must be 'create', 'update', or 'delete'", http.StatusBadRequest)
 			return
 		}
 
@@ -178,7 +180,7 @@ func main() {
 			}
 			err = repository.Create(customer)
 			message = "Customer created successfully"
-		} else {
+		} else if req.Action == "update" {
 			// Get a random customer to update
 			customer, err = repository.GetRandomCustomer(ctx)
 			if err != nil {
@@ -194,6 +196,30 @@ func main() {
 
 			err = repository.Update(customer)
 			message = fmt.Sprintf("Customer %s updated successfully", customer.ID.Hex())
+		} else if req.Action == "delete" {
+			// Get customer by ID
+			customerID, err := primitive.ObjectIDFromHex(req.CustomerID)
+			if err != nil {
+				log.Printf("Invalid customer ID: %v", err)
+				http.Error(w, "Invalid customer ID", http.StatusBadRequest)
+				return
+			}
+			
+			// Find customer first
+			customer, err = repository.FindByID(customerID, true)
+			if err != nil {
+				log.Printf("Failed to find customer: %v", err)
+				http.Error(w, "Failed to find customer", http.StatusInternalServerError)
+				return
+			}
+			if customer == nil {
+				http.Error(w, "Customer not found", http.StatusNotFound)
+				return
+			}
+
+			// Soft delete the customer
+			err = repository.SoftDelete(customerID)
+			message = fmt.Sprintf("Customer %s deleted successfully", customerID.Hex())
 		}
 
 		if err != nil {

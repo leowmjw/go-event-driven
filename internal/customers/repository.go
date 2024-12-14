@@ -75,7 +75,7 @@ func (r *MongoRepository) Create(customer *Customer) error {
 		event := OutboxEvent{
 			ID:         primitive.NewObjectID(),
 			EventType:  "CustomerCreated",
-			Payload:    customerBSON,
+			Payload:    bson.Raw(customerBSON),
 			Status:    "pending",
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -126,7 +126,7 @@ func (r *MongoRepository) Update(customer *Customer) error {
 		event := OutboxEvent{
 			ID:         primitive.NewObjectID(),
 			EventType:  "CustomerUpdated",
-			Payload:    customerBSON,
+			Payload:    bson.Raw(customerBSON),
 			Status:    "pending",
 			CreatedAt: now,
 			UpdatedAt: now,
@@ -143,9 +143,14 @@ func (r *MongoRepository) Update(customer *Customer) error {
 	return err
 }
 
-func (r *MongoRepository) FindByID(id primitive.ObjectID) (*Customer, error) {
+func (r *MongoRepository) FindByID(id primitive.ObjectID, includeDeleted bool) (*Customer, error) {
+	filter := bson.M{"_id": id}
+	if !includeDeleted {
+		filter["deleted"] = false
+	}
+
 	var customer Customer
-	err := r.customersCollection.FindOne(context.Background(), bson.M{"_id": id}).Decode(&customer)
+	err := r.customersCollection.FindOne(context.Background(), filter).Decode(&customer)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -155,9 +160,14 @@ func (r *MongoRepository) FindByID(id primitive.ObjectID) (*Customer, error) {
 	return &customer, nil
 }
 
-func (r *MongoRepository) FindByEmail(email string) (*Customer, error) {
+func (r *MongoRepository) FindByEmail(email string, includeDeleted bool) (*Customer, error) {
+	filter := bson.M{"email": email}
+	if !includeDeleted {
+		filter["deleted"] = false
+	}
+
 	var customer Customer
-	err := r.customersCollection.FindOne(context.Background(), bson.M{"email": email}).Decode(&customer)
+	err := r.customersCollection.FindOne(context.Background(), filter).Decode(&customer)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
@@ -167,7 +177,66 @@ func (r *MongoRepository) FindByEmail(email string) (*Customer, error) {
 	return &customer, nil
 }
 
-// GetRandomCustomer returns a random customer from the collection
+func (r *MongoRepository) SoftDelete(id primitive.ObjectID) error {
+	session, err := r.client.StartSession()
+	if err != nil {
+		return fmt.Errorf("failed to start session: %v", err)
+	}
+	defer session.EndSession(context.Background())
+
+	_, err = session.WithTransaction(context.Background(), func(sessCtx mongo.SessionContext) (interface{}, error) {
+		// Update customer
+		update := bson.M{
+			"$set": bson.M{
+				"deleted":    true,
+				"updated_at": time.Now(),
+			},
+		}
+		result, err := r.customersCollection.UpdateOne(
+			sessCtx,
+			bson.M{"_id": id},
+			update,
+		)
+		if err != nil {
+			return nil, fmt.Errorf("failed to update customer: %v", err)
+		}
+		if result.MatchedCount == 0 {
+			return nil, fmt.Errorf("customer not found")
+		}
+
+		// Get the updated customer
+		var customer Customer
+		err = r.customersCollection.FindOne(sessCtx, bson.M{"_id": id}).Decode(&customer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to find customer: %v", err)
+		}
+
+		// Create outbox event
+		customerBytes, err := bson.Marshal(customer)
+		if err != nil {
+			return nil, fmt.Errorf("failed to marshal customer: %v", err)
+		}
+
+		event := OutboxEvent{
+			ID:        primitive.NewObjectID(),
+			EventType: "CustomerDeleted",
+			Payload:   bson.Raw(customerBytes),
+			Status:    "pending",
+			CreatedAt: time.Now(),
+			UpdatedAt: time.Now(),
+		}
+
+		_, err = r.outboxCollection.InsertOne(sessCtx, event)
+		if err != nil {
+			return nil, fmt.Errorf("failed to create outbox event: %v", err)
+		}
+
+		return nil, nil
+	})
+
+	return err
+}
+
 func (r *MongoRepository) GetRandomCustomer(ctx context.Context) (*Customer, error) {
 	// Use MongoDB's $sample to get a random document
 	pipeline := []bson.D{

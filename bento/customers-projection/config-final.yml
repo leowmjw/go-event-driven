@@ -25,13 +25,18 @@ pipeline:
     - mapping: |
         meta = {
           "original": this,
-          "myid": this._id.get("$oid")
+          "myid": this._id.get("$oid"),
+          "event_type": this.event_type
         }
-              
-        root.name = this.payload.name
-        root.email = this.payload.email
-        root.updated_at = now()
-        root.status = "true"
+        
+        if meta.event_type == "CustomerDeleted" {
+          root = this.payload
+          root.deleted = true
+          root.updated_at = now()
+        } else {
+          root = this.payload
+          root.updated_at = now()
+        }
 
     - mongodb:
         url: "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
@@ -39,7 +44,7 @@ pipeline:
         collection: "projection_customers"
         operation: update-one
         filter_map: |
-          root.email = this.email
+          root = {"_id": this._id}
         document_map: |
           root = {"$set": this}
         upsert: true

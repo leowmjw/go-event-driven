@@ -28,6 +28,7 @@ func TestOrderActivitiesTestSuite(t *testing.T) {
 }
 
 func (s *OrderActivitiesTestSuite) Test_CreateOrder() {
+	// Test valid order
 	input := OrderWorkflowInput{
 		OrderID:    "test-order-1",
 		CustomerID: "test-customer-1",
@@ -42,42 +43,59 @@ func (s *OrderActivitiesTestSuite) Test_CreateOrder() {
 		TotalAmount: 10.00,
 	}
 
-	_, err := s.env.ExecuteActivity(CreateOrder, input)
+	var orderID string
+	result, err := s.env.ExecuteActivity(CreateOrder, input)
+	s.NoError(err)
+	s.NoError(result.Get(&orderID))
+	s.Equal("test-order-1", orderID)
 
-	// Verify activity returns "not implemented" error
+	// Test invalid order (missing order ID)
+	input.OrderID = ""
+	_, err = s.env.ExecuteActivity(CreateOrder, input)
 	s.Error(err)
-	s.False(strings.Contains(err.Error(), "CreateOrder not implemented"))
+	s.True(strings.Contains(err.Error(), "missing order ID"))
+
+	// Test invalid order (missing customer ID)
+	input.OrderID = "test-order-1"
+	input.CustomerID = ""
+	_, err = s.env.ExecuteActivity(CreateOrder, input)
+	s.Error(err)
+	s.True(strings.Contains(err.Error(), "missing customer ID"))
+
+	// Test invalid order (no items)
+	input.CustomerID = "test-customer-1"
+	input.Items = nil
+	_, err = s.env.ExecuteActivity(CreateOrder, input)
+	s.Error(err)
+	s.True(strings.Contains(err.Error(), "no items"))
 }
 
 func (s *OrderActivitiesTestSuite) Test_ProcessPayment() {
-	orderID := "test-order-1"
+	// Test successful payment
+	var paymentID string
+	result, err := s.env.ExecuteActivity(ProcessPayment, "order-1")
+	s.NoError(err)
+	s.NoError(result.Get(&paymentID))
+	s.Equal("payment-order-1", paymentID)
 
-	// Do a pre-check of the stock before submitting
-
-	// Finalize the amount including any special discounts + rules ..
-	_, err := s.env.ExecuteActivity(ProcessPayment, orderID)
-
-	// Verify activity returns "not implemented" error
+	// Test failed payment (insufficient funds)
+	_, err = s.env.ExecuteActivity(ProcessPayment, "order-2")
 	s.Error(err)
-	s.True(strings.Contains(err.Error(), "ProcessPayment not implemented"))
+	s.True(strings.Contains(err.Error(), "insufficient funds"))
 }
 
 func (s *OrderActivitiesTestSuite) Test_ProcessFulfillment() {
-	orderID := "test-order-1"
-
-	_, err := s.env.ExecuteActivity(ProcessFulfillment, orderID)
-
-	// Verify activity returns "not implemented" error
-	s.Error(err)
-	s.True(strings.Contains(err.Error(), "ProcessFulfillment not implemented"))
+	var fulfillmentID string
+	result, err := s.env.ExecuteActivity(ProcessFulfillment, "order-1")
+	s.NoError(err)
+	s.NoError(result.Get(&fulfillmentID))
+	s.Equal("fulfillment-order-1", fulfillmentID)
 }
 
 func (s *OrderActivitiesTestSuite) Test_ProcessDelivery() {
-	orderID := "test-order-1"
-
-	_, err := s.env.ExecuteActivity(ProcessDelivery, orderID)
-
-	// Verify activity returns "not implemented" error
-	s.Error(err)
-	s.True(strings.Contains(err.Error(), "ProcessDelivery not implemented"))
+	var deliveryID string
+	result, err := s.env.ExecuteActivity(ProcessDelivery, "order-1")
+	s.NoError(err)
+	s.NoError(result.Get(&deliveryID))
+	s.Equal("delivery-order-1", deliveryID)
 }
