@@ -21,7 +21,7 @@ func NewSetupHandler(mongoURI string) (*SetupHandler, error) {
 	ctx := context.Background()
 	clientOpts := options.Client().ApplyURI(mongoURI).
 		SetServerSelectionTimeout(2 * time.Second)
-	
+
 	client, err := mongo.Connect(ctx, clientOpts)
 	if err != nil {
 		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
@@ -167,9 +167,9 @@ func (h *SetupHandler) ResetDatabases(ctx context.Context) error {
 		}
 
 		event := OutboxEvent{
-			ID:         primitive.NewObjectID(),
-			EventType:  "CustomerCreated",
-			Payload:    payload,
+			ID:        primitive.NewObjectID(),
+			EventType: "CustomerCreated",
+			Payload:   payload,
 			Status:    "pending",
 			CreatedAt: time.Now(),
 			UpdatedAt: time.Now(),
@@ -181,18 +181,19 @@ func (h *SetupHandler) ResetDatabases(ctx context.Context) error {
 		}
 
 		// Create projection
-		projection := CustomerProjection{
-			ID:        testCustomer.Customer.ID,
-			Name:      testCustomer.Customer.Name,
-			Email:     testCustomer.Customer.Email,
-			CreatedAt: testCustomer.Customer.CreatedAt,
-			UpdatedAt: testCustomer.Customer.UpdatedAt,
-		}
+		// Projection should nnot be created by defautl ..
+		// projection := CustomerProjection{
+		// 	ID:        testCustomer.Customer.ID,
+		// 	Name:      testCustomer.Customer.Name,
+		// 	Email:     testCustomer.Customer.Email,
+		// 	CreatedAt: testCustomer.Customer.CreatedAt,
+		// 	UpdatedAt: testCustomer.Customer.UpdatedAt,
+		// }
 
-		_, err = h.mongoClient.Database("OrderingDB").Collection("projection_customers").InsertOne(ctx, projection)
-		if err != nil {
-			return fmt.Errorf("failed to insert customer projection: %v", err)
-		}
+		// _, err = h.mongoClient.Database("OrderingDB").Collection("projection_customers").InsertOne(ctx, projection)
+		// if err != nil {
+		// 	return fmt.Errorf("failed to insert customer projection: %v", err)
+		// }
 	}
 
 	return nil
