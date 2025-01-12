@@ -2,62 +2,60 @@ package customers
 
 import (
 	"context"
-	"fmt"
 	"log"
-	"sync"
 	"time"
 
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/mongo"
 	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
-type EventForwarder struct {
-	customersDB     *mongo.Database
-	orderingDB      *mongo.Database
-	client          *mongo.Client
-	stopChan        chan struct{}
-	processingMutex sync.Mutex
-	isProcessing    bool
+type EventForwarderImpl struct {
+	client     *mongo.Client
+	db         *mongo.Database
+	collection *mongo.Collection
+	stopChan   chan struct{}
 }
 
-func NewEventForwarder(mongoURI string) *EventForwarder {
+func NewEventForwarder(mongoURI string) *EventForwarderImpl {
 	ctx := context.Background()
-	clientOpts := options.Client().ApplyURI(mongoURI).
-		SetServerSelectionTimeout(2 * time.Second)
-	
-	client, err := mongo.Connect(ctx, clientOpts)
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
 	if err != nil {
-		panic(err)
+		log.Fatalf("Failed to connect to MongoDB: %v", err)
 	}
 
-	// Verify that we can connect to MongoDB and that it's a replica set
-	if err = client.Ping(ctx, readpref.Primary()); err != nil {
-		panic(fmt.Errorf("failed to ping MongoDB: %v", err))
-	}
+	db := client.Database("CustomersDB")
+	collection := db.Collection("outbox")
 
-	return &EventForwarder{
-		customersDB: client.Database("CustomersDB"),
-		orderingDB:  client.Database("OrderingDB"),
-		client:      client,
-		stopChan:    make(chan struct{}),
+	return &EventForwarderImpl{
+		client:     client,
+		db:         db,
+		collection: collection,
+		stopChan:   make(chan struct{}),
 	}
 }
 
-func (f *EventForwarder) Start() {
-	go f.processEvents()
+func (f *EventForwarderImpl) Forward(event OutboxEvent) error {
+	_, err := f.collection.InsertOne(context.Background(), event)
+	if err != nil {
+		return err
+	}
+	return nil
 }
 
-func (f *EventForwarder) Stop() {
+func (f *EventForwarderImpl) Start() {
+	go f.processOutboxEvents()
+}
+
+func (f *EventForwarderImpl) Stop() {
 	close(f.stopChan)
 	if err := f.client.Disconnect(context.Background()); err != nil {
-		log.Printf("Error disconnecting MongoDB client: %v", err)
+		log.Printf("Error disconnecting from MongoDB: %v", err)
 	}
 }
 
-func (f *EventForwarder) processEvents() {
-	ticker := time.NewTicker(100 * time.Millisecond) // Process events more frequently during testing
+func (f *EventForwarderImpl) processOutboxEvents() {
+	ticker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
 
 	for {
@@ -65,134 +63,43 @@ func (f *EventForwarder) processEvents() {
 		case <-f.stopChan:
 			return
 		case <-ticker.C:
-			f.processingMutex.Lock()
-			if f.isProcessing {
-				f.processingMutex.Unlock()
+			ctx := context.Background()
+			filter := bson.M{"status": "pending"}
+
+			// Find pending events
+			cursor, err := f.collection.Find(ctx, filter)
+			if err != nil {
+				log.Printf("Error finding pending events: %v", err)
 				continue
 			}
-			f.isProcessing = true
-			f.processingMutex.Unlock()
 
-			if err := f.forwardPendingEvents(); err != nil {
-				log.Printf("Error forwarding events: %v", err)
+			var events []OutboxEvent
+			if err := cursor.All(ctx, &events); err != nil {
+				log.Printf("Error decoding events: %v", err)
+				cursor.Close(ctx)
+				continue
 			}
+			cursor.Close(ctx)
 
-			f.processingMutex.Lock()
-			f.isProcessing = false
-			f.processingMutex.Unlock()
-		}
-	}
-}
+			for _, event := range events {
+				// Process event (in a real application, this would publish to a message broker)
+				log.Printf("Processing event: %s", event.EventType)
 
-func (f *EventForwarder) forwardPendingEvents() error {
-	ctx := context.Background()
-
-	// Find pending events
-	cursor, err := f.customersDB.Collection("outbox").Find(ctx, bson.M{
-		"status": "pending",
-	}, options.Find().SetSort(bson.D{{Key: "created_at", Value: 1}}))
-	if err != nil {
-		return fmt.Errorf("failed to find pending events: %v", err)
-	}
-	defer cursor.Close(ctx)
-
-	for cursor.Next(ctx) {
-		var event OutboxEvent
-		if err := cursor.Decode(&event); err != nil {
-			log.Printf("Error decoding event: %v", err)
-			continue
-		}
-
-		// Process the event
-		if err := f.processEvent(ctx, &event); err != nil {
-			log.Printf("Error processing event: %v", err)
-			// Update event status to failed
-			update := bson.M{
-				"$set": bson.M{
-					"status":     "failed",
-					"error":      err.Error(),
-					"updated_at": time.Now(),
-				},
-				"$inc": bson.M{
-					"retry_count": 1,
-				},
+				// Mark event as processed
+				_, err := f.collection.UpdateOne(
+					ctx,
+					bson.M{"_id": event.ID},
+					bson.M{
+						"$set": bson.M{
+							"status":     "processed",
+							"updatedAt": time.Now(),
+						},
+					},
+				)
+				if err != nil {
+					log.Printf("Error updating event status: %v", err)
+				}
 			}
-			if _, err := f.customersDB.Collection("outbox").UpdateOne(ctx,
-				bson.M{"_id": event.ID}, update); err != nil {
-				log.Printf("Error updating failed event: %v", err)
-			}
-			continue
-		}
-
-		// Mark event as processed
-		update := bson.M{
-			"$set": bson.M{
-				"status":     "processed",
-				"updated_at": time.Now(),
-			},
-		}
-		if _, err := f.customersDB.Collection("outbox").UpdateOne(ctx,
-			bson.M{"_id": event.ID}, update); err != nil {
-			log.Printf("Error updating processed event: %v", err)
 		}
 	}
-
-	return nil
-}
-
-func (f *EventForwarder) processEvent(ctx context.Context, event *OutboxEvent) error {
-	// Start a session for transaction
-	session, err := f.client.StartSession()
-	if err != nil {
-		return fmt.Errorf("failed to start session: %v", err)
-	}
-	defer session.EndSession(ctx)
-
-	// Start transaction
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		var customer Customer
-		if err := bson.Unmarshal(event.Payload, &customer); err != nil {
-			return nil, fmt.Errorf("failed to unmarshal customer: %v", err)
-		}
-
-		// Create or update projection
-		projection := CustomerProjection{
-			ID:        customer.ID,
-			Name:      customer.Name,
-			Email:     customer.Email,
-			Deleted:   customer.Deleted,
-			CreatedAt: customer.CreatedAt,
-			UpdatedAt: customer.UpdatedAt,
-		}
-
-		filter := bson.M{"_id": customer.ID}
-		update := bson.M{"$set": projection}
-		opts := options.Update().SetUpsert(true)
-
-		_, err = f.orderingDB.Collection("projection_customers").UpdateOne(
-			sessCtx, filter, update, opts)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update projection: %v", err)
-		}
-
-		// Update outbox event status
-		update = bson.M{
-			"$set": bson.M{
-				"status":     "processed",
-				"updated_at": time.Now(),
-			},
-		}
-		_, err = f.customersDB.Collection("outbox").UpdateOne(
-			sessCtx,
-			bson.M{"_id": event.ID},
-			update,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update outbox event: %v", err)
-		}
-
-		return nil, nil
-	})
-
-	return err
 }

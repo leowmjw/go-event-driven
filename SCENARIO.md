@@ -24,3 +24,9 @@ High level description of the Bounded Context for an e-commerce example
 
 - Feature Engineering to simple prediction of fraud
 - Monthly Report of Sales + Disputes
+
+### Inventory Context
+
+- CRUD for Inventory; with related Product Info Available for Purchase, which are being delivered in, which are being shipepd out
+- Projection of Inventory Status and latest number to be used by Ordering Context
+- Uses Orchestration for Critical Flow; of Order Fulfillment + Delivery + Inventory Management + Refund

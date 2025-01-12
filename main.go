@@ -13,334 +13,217 @@ import (
 
 	"app/internal/customers"
 
-	"github.com/bitfield/script"
 	"go.mongodb.org/mongo-driver/bson/primitive"
+	"go.mongodb.org/mongo-driver/mongo"
+	"go.mongodb.org/mongo-driver/mongo/options"
 )
 
-const mongoURI = "mongodb://localhost:27017/?replicaSet=rs0&directConnection=true"
+const (
+	mongoURI = "mongodb://localhost:27017"
+)
 
-type CustomerRequest struct {
-	Action string `json:"action"` // "create" or "update"
-	Name   string `json:"name"`
-	Email  string `json:"email"`
-	CustomerID string `json:"customerID"`
+type App struct {
+	mux          *http.ServeMux
+	repository   *customers.MongoRepository
+	setupHandler *customers.SetupHandler
+	service      *customers.Service
+	forwarder    customers.EventForwarder
 }
 
-type CustomerResponse struct {
-	Message  string              `json:"message,omitempty"`
-	Customer *customers.Customer `json:"customer"`
-}
-
-func mainToo() {
-
-	// Create a new server mux
-	server := http.NewServeMux()
-
-	// Register routes
-	server.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello World")
-		return
-	})
-
-	// Create server with timeouts
-	srv := &http.Server{
-		Addr:         ":8080", // This prevents Mac Firewall noisy ..
-		Handler:      server,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
+func NewApp() (*App, error) {
+	// Initialize MongoDB client
+	ctx := context.Background()
+	client, err := mongo.Connect(ctx, options.Client().ApplyURI(mongoURI))
+	if err != nil {
+		return nil, fmt.Errorf("failed to connect to MongoDB: %v", err)
 	}
 
-	// Start server in a goroutine
-	go func() {
-		fmt.Printf("Server starting on port %s\n", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v\n", err)
-		}
-	}()
-
-	// Wait for interrupt signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
-
-	// Graceful shutdown
-	fmt.Println("\nShutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
-	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v\n", err)
-	}
-
-	fmt.Println("Server gracefully stopped")
-
-}
-
-func main() {
-	fmt.Println("Welcome to EventDriven e-Commerce! Toasties!! Overmind!!")
+	// Initialize repository
+	repository := customers.NewMongoRepository(client.Database("CustomersDB"))
 
 	// Initialize setup handler
 	setupHandler, err := customers.NewSetupHandler(mongoURI)
 	if err != nil {
-		log.Fatalf("Failed to create setup handler: %v", err)
-	}
-	defer setupHandler.Close(context.Background())
-
-	// Initialize repository for customer operations
-	repository := customers.NewMongoRepository(mongoURI)
-
-	useBento := os.Getenv("ENABLE_BENTO")
-	if useBento != "" {
-		fmt.Println("ACTIVE: Bento Forwarder")
-		// Use Bento for the forwarder instead ...
-		// Start to call bento command line; and have a termination as a defer
-		script.Exec("echo Hello, world!").Stdout()
-
-		defer func() {
-			fmt.Println("KILL: Bento Forwarder")
-			script.Exec("kill `pgrep bento`").Stdout()
-			fmt.Println("FINISH: Bento Forwarder")
-		}()
-	} else {
-		fmt.Println("DEFAULT: channel Forwarder")
-		// DEFAULT: Initialize forwarder for normal operations
-		forwarder := customers.NewEventForwarder(mongoURI)
-		forwarder.Start()
-		defer forwarder.Stop()
+		return nil, fmt.Errorf("failed to create setup handler: %v", err)
 	}
 
-	// Create a new server mux
-	server := http.NewServeMux()
+	// Initialize forwarder
+	forwarder := customers.NewEventForwarder(mongoURI)
+	forwarder.Start()
 
-	// Register routes
-	server.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello World")
-		return
-	})
-	server.HandleFunc("POST /", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprintf(w, "Hello POSTy")
-		return
-	})
-	server.HandleFunc("GET /error", func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, http.StatusText(http.StatusInternalServerError), http.StatusInternalServerError)
-		return
-	})
+	// Initialize service
+	service := customers.NewService(repository, forwarder)
 
-	// Add customers endpoints
-	server.HandleFunc("GET /customers", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
+	// Initialize router
+	mux := http.NewServeMux()
 
-		// Get all customers
-		customers, err := setupHandler.GetTestCustomers(ctx)
-		if err != nil {
-			log.Printf("Failed to get customers: %v", err)
-			http.Error(w, "Failed to get customers", http.StatusInternalServerError)
-			return
-		}
+	app := &App{
+		mux:          mux,
+		repository:   repository,
+		setupHandler: setupHandler,
+		service:      service,
+		forwarder:    forwarder,
+	}
 
-		// Return customers as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(customers); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
+	// Setup routes
+	app.setupRoutes()
 
-	// Add customer create/update endpoint
-	server.HandleFunc("POST /customers/action", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
+	return app, nil
+}
 
-		// Parse request
-		var req CustomerRequest
-		if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
-			log.Printf("Failed to decode request: %v", err)
-			http.Error(w, "Invalid request body", http.StatusBadRequest)
-			return
-		}
+func (a *App) setupRoutes() {
+	// Customer routes
+	a.mux.HandleFunc("POST /customers", a.createCustomer)
+	a.mux.HandleFunc("PUT /customers/{id}", a.updateCustomer)
+	a.mux.HandleFunc("GET /customers/{id}", a.getCustomer)
+	a.mux.HandleFunc("DELETE /customers/{id}", a.deleteCustomer)
 
-		// Validate action
-		if req.Action != "create" && req.Action != "update" && req.Action != "delete" {
-			http.Error(w, "Invalid action, must be 'create', 'update', or 'delete'", http.StatusBadRequest)
-			return
-		}
+	// Setup routes
+	a.mux.HandleFunc("POST /setup/testdata", a.setupTestData)
+	a.mux.HandleFunc("POST /setup/reset", a.resetData)
+}
 
-		var customer *customers.Customer
-		var message string
-		var err error
+func (a *App) Cleanup() {
+	a.setupHandler.Close()
+	a.forwarder.Stop()
+}
 
-		if req.Action == "create" {
-			// Create new customer
-			customer = &customers.Customer{
-				Name:      req.Name,
-				Email:     req.Email,
-				CreatedAt: time.Now(),
-				UpdatedAt: time.Now(),
-			}
-			err = repository.Create(customer)
-			message = "Customer created successfully"
-		} else if req.Action == "update" {
-			// Get a random customer to update
-			customer, err = repository.GetRandomCustomer(ctx)
-			if err != nil {
-				log.Printf("Failed to get random customer: %v", err)
-				http.Error(w, "Failed to get random customer", http.StatusInternalServerError)
-				return
-			}
-
-			// Update the customer with new data
-			customer.Name = req.Name
-			customer.Email = req.Email
-			customer.UpdatedAt = time.Now()
-
-			err = repository.Update(customer)
-			message = fmt.Sprintf("Customer %s updated successfully", customer.ID.Hex())
-		} else if req.Action == "delete" {
-			// Get customer by ID
-			customerID, err := primitive.ObjectIDFromHex(req.CustomerID)
-			if err != nil {
-				log.Printf("Invalid customer ID: %v", err)
-				http.Error(w, "Invalid customer ID", http.StatusBadRequest)
-				return
-			}
-			
-			// Find customer first
-			customer, err = repository.FindByID(customerID, true)
-			if err != nil {
-				log.Printf("Failed to find customer: %v", err)
-				http.Error(w, "Failed to find customer", http.StatusInternalServerError)
-				return
-			}
-			if customer == nil {
-				http.Error(w, "Customer not found", http.StatusNotFound)
-				return
-			}
-
-			// Soft delete the customer
-			err = repository.SoftDelete(customerID)
-			message = fmt.Sprintf("Customer %s deleted successfully", customerID.Hex())
-		}
-
-		if err != nil {
-			log.Printf("Failed to %s customer: %v", req.Action, err)
-			http.Error(w, fmt.Sprintf("Failed to %s customer", req.Action), http.StatusInternalServerError)
-			return
-		}
-
-		// Return response with message and customer data
-		response := CustomerResponse{
-			Message:  message,
-			Customer: customer,
-		}
-
-		// Return the response as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(response); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Add outbox endpoint
-	server.HandleFunc("GET /customers/outbox", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		// Get all outbox entries
-		entries, err := setupHandler.GetOutboxEntries(ctx)
-		if err != nil {
-			log.Printf("Failed to get outbox entries: %v", err)
-			http.Error(w, "Failed to get outbox entries", http.StatusInternalServerError)
-			return
-		}
-
-		// Return entries as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(entries); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Add projection endpoint
-	server.HandleFunc("GET /customers/projection", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-
-		// Get all customer projections
-		projections, err := setupHandler.GetCustomerProjections(ctx)
-		if err != nil {
-			log.Printf("Failed to get customer projections: %v", err)
-			http.Error(w, "Failed to get customer projections", http.StatusInternalServerError)
-			return
-		}
-
-		// Return projections as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(projections); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Move setup to /customers/setup
-	server.HandleFunc("POST /customers/setup", func(w http.ResponseWriter, r *http.Request) {
-		ctx := r.Context()
-		if err := setupHandler.ResetDatabases(ctx); err != nil {
-			log.Printf("Failed to reset databases: %v", err)
-			http.Error(w, "Failed to reset databases", http.StatusInternalServerError)
-			return
-		}
-
-		// Get test customers for response
-		testCustomers, err := setupHandler.GetTestCustomers(ctx)
-		if err != nil {
-			log.Printf("Failed to get test customers: %v", err)
-			http.Error(w, "Failed to get test customers", http.StatusInternalServerError)
-			return
-		}
-
-		// Return test customers as JSON
-		w.Header().Set("Content-Type", "application/json")
-		if err := json.NewEncoder(w).Encode(testCustomers); err != nil {
-			log.Printf("Failed to encode response: %v", err)
-			http.Error(w, "Failed to encode response", http.StatusInternalServerError)
-			return
-		}
-	})
-
-	// Create server with timeouts
-	srv := &http.Server{
-		Addr:         "localhost:8080", // This prevents Mac Firewall noisy ..
-		Handler:      server,
-		ReadTimeout:  10 * time.Second,
-		WriteTimeout: 10 * time.Second,
-		IdleTimeout:  30 * time.Second,
+func (a *App) Run(addr string) error {
+	server := &http.Server{
+		Addr:         addr,
+		Handler:      a.mux,
+		ReadTimeout:  15 * time.Second,
+		WriteTimeout: 15 * time.Second,
 	}
 
 	// Start server in a goroutine
 	go func() {
-		fmt.Printf("Server starting on port %s\n", srv.Addr)
-		if err := srv.ListenAndServe(); err != nil && err != http.ErrServerClosed {
-			log.Fatalf("Server failed to start: %v\n", err)
+		if err := server.ListenAndServe(); err != nil && err != http.ErrServerClosed {
+			log.Fatalf("Server error: %v", err)
 		}
 	}()
 
 	// Wait for interrupt signal
-	quit := make(chan os.Signal, 1)
-	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
-	<-quit
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, os.Interrupt, syscall.SIGTERM)
+	<-stop
 
-	// Graceful shutdown
-	fmt.Println("\nShutting down server...")
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	// Shutdown server gracefully
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
 
-	if err := srv.Shutdown(ctx); err != nil {
-		log.Fatalf("Server forced to shutdown: %v\n", err)
+	if err := server.Shutdown(ctx); err != nil {
+		return fmt.Errorf("server shutdown failed: %v", err)
 	}
 
-	fmt.Println("Server gracefully stopped")
+	return nil
+}
+
+func (a *App) setupTestData(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := a.setupHandler.SetupTestData(ctx); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to setup test data: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "Test data setup completed successfully")
+}
+
+func (a *App) resetData(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	if err := a.setupHandler.SetupTestData(ctx); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to reset data: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	fmt.Fprint(w, "Data reset completed successfully")
+}
+
+func (a *App) createCustomer(w http.ResponseWriter, r *http.Request) {
+	var customer customers.Customer
+	if err := json.NewDecoder(r.Body).Decode(&customer); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	if err := a.service.CreateCustomer(r.Context(), &customer); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to create customer: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusCreated)
+	json.NewEncoder(w).Encode(customer)
+}
+
+func (a *App) updateCustomer(w http.ResponseWriter, r *http.Request) {
+	id, err := primitive.ObjectIDFromHex(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid customer ID", http.StatusBadRequest)
+		return
+	}
+
+	var customer customers.Customer
+	if err := json.NewDecoder(r.Body).Decode(&customer); err != nil {
+		http.Error(w, fmt.Sprintf("Invalid request body: %v", err), http.StatusBadRequest)
+		return
+	}
+
+	customer.ID = id
+	if err := a.service.UpdateCustomer(r.Context(), &customer); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to update customer: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusOK)
+	json.NewEncoder(w).Encode(customer)
+}
+
+func (a *App) getCustomer(w http.ResponseWriter, r *http.Request) {
+	id, err := primitive.ObjectIDFromHex(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid customer ID", http.StatusBadRequest)
+		return
+	}
+
+	customer, err := a.service.FindCustomerByID(r.Context(), id, false)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			http.Error(w, "Customer not found", http.StatusNotFound)
+			return
+		}
+		http.Error(w, fmt.Sprintf("Failed to get customer: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	json.NewEncoder(w).Encode(customer)
+}
+
+func (a *App) deleteCustomer(w http.ResponseWriter, r *http.Request) {
+	id, err := primitive.ObjectIDFromHex(r.PathValue("id"))
+	if err != nil {
+		http.Error(w, "Invalid customer ID", http.StatusBadRequest)
+		return
+	}
+
+	if err := a.service.SoftDeleteCustomer(r.Context(), id); err != nil {
+		http.Error(w, fmt.Sprintf("Failed to delete customer: %v", err), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func main() {
+	app, err := NewApp()
+	if err != nil {
+		log.Fatalf("Failed to initialize app: %v", err)
+	}
+	defer app.Cleanup()
+
+	log.Println("Starting server on :8080...")
+	if err := app.Run(":8080"); err != nil {
+		log.Fatalf("Server error: %v", err)
+	}
 }

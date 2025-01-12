@@ -8,255 +8,119 @@ import (
 	"go.mongodb.org/mongo-driver/bson"
 	"go.mongodb.org/mongo-driver/bson/primitive"
 	"go.mongodb.org/mongo-driver/mongo"
-	"go.mongodb.org/mongo-driver/mongo/options"
-	"go.mongodb.org/mongo-driver/mongo/readpref"
 )
 
+// MongoRepository implements the Repository interface
 type MongoRepository struct {
-	customersCollection *mongo.Collection
-	outboxCollection   *mongo.Collection
-	client            *mongo.Client
+	db *mongo.Database
 }
 
-func NewMongoRepository(mongoURI string) *MongoRepository {
-	ctx := context.Background()
-	clientOpts := options.Client().ApplyURI(mongoURI).
-		SetServerSelectionTimeout(2 * time.Second)
-	
-	client, err := mongo.Connect(ctx, clientOpts)
-	if err != nil {
-		panic(err)
-	}
-
-	// Verify that we can connect to MongoDB and that it's a replica set
-	if err = client.Ping(ctx, readpref.Primary()); err != nil {
-		panic(fmt.Errorf("failed to ping MongoDB: %v", err))
-	}
-
-	customersDB := client.Database("CustomersDB")
+// NewMongoRepository creates a new MongoDB repository
+func NewMongoRepository(db *mongo.Database) *MongoRepository {
 	return &MongoRepository{
-		customersCollection: customersDB.Collection("customers"),
-		outboxCollection:   customersDB.Collection("outbox"),
-		client:            client,
+		db: db,
 	}
 }
 
-func (r *MongoRepository) Create(customer *Customer) error {
-	ctx := context.Background()
-
-	// Start a session for transaction
-	session, err := r.client.StartSession()
-	if err != nil {
-		return fmt.Errorf("failed to start session: %v", err)
-	}
-	defer session.EndSession(ctx)
-
-	// Start transaction
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// Insert customer
-		if customer.ID.IsZero() {
-			customer.ID = primitive.NewObjectID()
-		}
-		now := time.Now()
+// Create creates a new customer
+func (r *MongoRepository) Create(ctx context.Context, customer *Customer) error {
+	// Set timestamps if not set
+	now := time.Now()
+	if customer.CreatedAt.IsZero() {
 		customer.CreatedAt = now
+	}
+	if customer.UpdatedAt.IsZero() {
 		customer.UpdatedAt = now
+	}
 
-		_, err := r.customersCollection.InsertOne(sessCtx, customer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to insert customer: %v", err)
-		}
-
-		// Create outbox event
-		customerBSON, err := bson.Marshal(customer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal customer: %v", err)
-		}
-
-		event := OutboxEvent{
-			ID:         primitive.NewObjectID(),
-			EventType:  "CustomerCreated",
-			Payload:    bson.Raw(customerBSON),
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		_, err = r.outboxCollection.InsertOne(sessCtx, event)
-		if err != nil {
-			return nil, fmt.Errorf("failed to insert outbox event: %v", err)
-		}
-
-		return nil, nil
-	})
-
-	return err
-}
-
-func (r *MongoRepository) Update(customer *Customer) error {
-	ctx := context.Background()
-
-	// Start a session for transaction
-	session, err := r.client.StartSession()
+	// Insert customer
+	result, err := r.db.Collection("customers").InsertOne(ctx, customer)
 	if err != nil {
-		return fmt.Errorf("failed to start session: %v", err)
+		return fmt.Errorf("failed to create customer: %v", err)
 	}
-	defer session.EndSession(ctx)
 
-	// Start transaction
-	_, err = session.WithTransaction(ctx, func(sessCtx mongo.SessionContext) (interface{}, error) {
-		now := time.Now()
-		customer.UpdatedAt = now
-
-		// Update customer
-		filter := bson.M{"_id": customer.ID}
-		update := bson.M{"$set": customer}
-		result := r.customersCollection.FindOneAndUpdate(sessCtx, filter, update, options.FindOneAndUpdate().SetReturnDocument(options.After))
-		
-		var updatedCustomer Customer
-		if err := result.Decode(&updatedCustomer); err != nil {
-			return nil, fmt.Errorf("failed to update customer: %v", err)
-		}
-
-		// Create outbox event
-		customerBSON, err := bson.Marshal(customer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal customer: %v", err)
-		}
-
-		event := OutboxEvent{
-			ID:         primitive.NewObjectID(),
-			EventType:  "CustomerUpdated",
-			Payload:    bson.Raw(customerBSON),
-			Status:    "pending",
-			CreatedAt: now,
-			UpdatedAt: now,
-		}
-
-		_, err = r.outboxCollection.InsertOne(sessCtx, event)
-		if err != nil {
-			return nil, fmt.Errorf("failed to insert outbox event: %v", err)
-		}
-
-		return nil, nil
-	})
-
-	return err
+	// Set the generated ID
+	customer.ID = result.InsertedID.(primitive.ObjectID)
+	return nil
 }
 
-func (r *MongoRepository) FindByID(id primitive.ObjectID, includeDeleted bool) (*Customer, error) {
-	filter := bson.M{"_id": id}
-	if !includeDeleted {
-		filter["deleted"] = false
-	}
+// Update updates an existing customer
+func (r *MongoRepository) Update(ctx context.Context, customer *Customer) error {
+	// Set update timestamp
+	customer.UpdatedAt = time.Now()
 
-	var customer Customer
-	err := r.customersCollection.FindOne(context.Background(), filter).Decode(&customer)
+	// Update customer
+	filter := bson.M{"_id": customer.ID, "deleted": bson.M{"$ne": true}}
+	update := bson.M{"$set": customer}
+
+	result, err := r.db.Collection("customers").UpdateOne(ctx, filter, update)
 	if err != nil {
-		if err == mongo.ErrNoDocuments {
-			return nil, nil
-		}
-		return nil, err
+		return fmt.Errorf("failed to update customer: %v", err)
 	}
-	return &customer, nil
+
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("customer not found")
+	}
+
+	return nil
 }
 
-func (r *MongoRepository) FindByEmail(email string, includeDeleted bool) (*Customer, error) {
+// FindByEmail finds a customer by email
+func (r *MongoRepository) FindByEmail(ctx context.Context, email string, includeDeleted bool) (*Customer, error) {
 	filter := bson.M{"email": email}
 	if !includeDeleted {
-		filter["deleted"] = false
+		filter["deleted"] = bson.M{"$ne": true}
 	}
 
 	var customer Customer
-	err := r.customersCollection.FindOne(context.Background(), filter).Decode(&customer)
+	err := r.db.Collection("customers").FindOne(ctx, filter).Decode(&customer)
 	if err != nil {
 		if err == mongo.ErrNoDocuments {
 			return nil, nil
 		}
-		return nil, err
+		return nil, fmt.Errorf("failed to find customer by email: %v", err)
 	}
+
 	return &customer, nil
 }
 
-func (r *MongoRepository) SoftDelete(id primitive.ObjectID) error {
-	session, err := r.client.StartSession()
-	if err != nil {
-		return fmt.Errorf("failed to start session: %v", err)
+// FindByID finds a customer by ID
+func (r *MongoRepository) FindByID(ctx context.Context, id primitive.ObjectID, includeDeleted bool) (*Customer, error) {
+	filter := bson.M{"_id": id}
+	if !includeDeleted {
+		filter["deleted"] = bson.M{"$ne": true}
 	}
-	defer session.EndSession(context.Background())
 
-	_, err = session.WithTransaction(context.Background(), func(sessCtx mongo.SessionContext) (interface{}, error) {
-		// Update customer
-		update := bson.M{
-			"$set": bson.M{
-				"deleted":    true,
-				"updated_at": time.Now(),
-			},
+	var customer Customer
+	err := r.db.Collection("customers").FindOne(ctx, filter).Decode(&customer)
+	if err != nil {
+		if err == mongo.ErrNoDocuments {
+			return nil, nil
 		}
-		result, err := r.customersCollection.UpdateOne(
-			sessCtx,
-			bson.M{"_id": id},
-			update,
-		)
-		if err != nil {
-			return nil, fmt.Errorf("failed to update customer: %v", err)
-		}
-		if result.MatchedCount == 0 {
-			return nil, fmt.Errorf("customer not found")
-		}
+		return nil, fmt.Errorf("failed to find customer by ID: %v", err)
+	}
 
-		// Get the updated customer
-		var customer Customer
-		err = r.customersCollection.FindOne(sessCtx, bson.M{"_id": id}).Decode(&customer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to find customer: %v", err)
-		}
-
-		// Create outbox event
-		customerBytes, err := bson.Marshal(customer)
-		if err != nil {
-			return nil, fmt.Errorf("failed to marshal customer: %v", err)
-		}
-
-		event := OutboxEvent{
-			ID:        primitive.NewObjectID(),
-			EventType: "CustomerDeleted",
-			Payload:   bson.Raw(customerBytes),
-			Status:    "pending",
-			CreatedAt: time.Now(),
-			UpdatedAt: time.Now(),
-		}
-
-		_, err = r.outboxCollection.InsertOne(sessCtx, event)
-		if err != nil {
-			return nil, fmt.Errorf("failed to create outbox event: %v", err)
-		}
-
-		return nil, nil
-	})
-
-	return err
+	return &customer, nil
 }
 
-func (r *MongoRepository) GetRandomCustomer(ctx context.Context) (*Customer, error) {
-	// Use MongoDB's $sample to get a random document
-	pipeline := []bson.D{
-		{{Key: "$sample", Value: bson.D{{Key: "size", Value: 1}}}},
+// SoftDelete soft deletes a customer
+func (r *MongoRepository) SoftDelete(ctx context.Context, id primitive.ObjectID) error {
+	filter := bson.M{"_id": id, "deleted": bson.M{"$ne": true}}
+	update := bson.M{
+		"$set": bson.M{
+			"deleted":    true,
+			"updatedAt": time.Now(),
+		},
 	}
 
-	cursor, err := r.customersCollection.Aggregate(ctx, pipeline)
+	result, err := r.db.Collection("customers").UpdateOne(ctx, filter, update)
 	if err != nil {
-		return nil, fmt.Errorf("failed to get random customer: %v", err)
-	}
-	defer cursor.Close(ctx)
-
-	var customers []Customer
-	if err := cursor.All(ctx, &customers); err != nil {
-		return nil, fmt.Errorf("failed to decode random customer: %v", err)
+		return fmt.Errorf("failed to soft delete customer: %v", err)
 	}
 
-	if len(customers) == 0 {
-		return nil, fmt.Errorf("no customers found")
+	if result.MatchedCount == 0 {
+		return fmt.Errorf("customer not found")
 	}
 
-	return &customers[0], nil
+	return nil
 }
